@@ -44,8 +44,15 @@ team_t team = {
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
 
+#define SIZE_T_SIZE (ALIGN(sizeof(header_t)))
 
-#define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
+typedef short free_t;
+
+typedef struct header_t {
+	size_t size;
+	free_t free;
+} header_t;
+
 
 /* 
  * mm_init - initialize the malloc package.
@@ -59,12 +66,28 @@ int mm_init(void) {
  *     Always allocate a block whose size is a multiple of the alignment.
  */
 void *mm_malloc(size_t size) {
+	size_t heapsize = mem_heapsize();
 	int newsize = ALIGN(size + SIZE_T_SIZE);
-	void *p = mem_sbrk(newsize);
+	printf("size: %d\n",newsize);
+	header_t *p;
+	if (!heapsize) {
+		p = mem_sbrk(newsize);
+	} else {
+		char *top = (char *)mem_heap_hi();
+		p = mem_heap_lo();
+		while (p->size != 0 && p->size < newsize && p->free != 1) { // need to add a better check to see if at the end of the heap
+			printf("old: %d %d %d\n",top,p,p->size);
+			p = (char *)p + p->size;
+			printf("new: %d %d %d\n",top,p,p->size);
+		}
+		if (p->free != 1)
+			p = mem_sbrk(newsize);
+	}
 	if (p == (void *)-1)
 		return NULL;
 	else {
-		*(size_t *)p = size;
+		p->size = newsize;
+		p->free = 0;
 		return (void *)((char *)p + SIZE_T_SIZE);
 	}
 }
@@ -73,13 +96,15 @@ void *mm_malloc(size_t size) {
  * mm_free - Freeing a block does nothing.
  */
 void mm_free(void *ptr) {
+	printf("free: %d\n",((header_t *)(ptr))->size);
+	((header_t *)(ptr))->free = 1;
 }
 
 /*
  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
  */
 void *mm_realloc(void *ptr, size_t size) {
-	void *oldptr = ptr;
+	/*void *oldptr = ptr;
 	void *newptr;
 	size_t copySize;
 
@@ -91,7 +116,8 @@ void *mm_realloc(void *ptr, size_t size) {
 		copySize = size;
 	memcpy(newptr, oldptr, copySize);
 	mm_free(oldptr);
-	return newptr;
+	return newptr;*/
+	return;
 }
 
 /*
