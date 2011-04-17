@@ -27,15 +27,15 @@
  ********************************************************/
 team_t team = {
 	/* Team name */
-	"tph",
+	"Mike & Thomas",
 	/* First member's full name */
 	"Thomas Huston",
 	/* First member's NYU NetID*/
 	"tph227@nyu.edu",
 	/* Second member's full name (leave blank if none) */
-	"",
+	"Mike Morreale",
 	/* Second member's email address (leave blank if none) */
-	""
+	"???@nyu.edu"
 };
 
 /* single word (4) or double word (8) alignment */
@@ -49,8 +49,8 @@ team_t team = {
 typedef short free_t;
 
 typedef struct header_t {
-	size_t size;
 	free_t free;
+	size_t size;
 } header_t;
 
 
@@ -66,6 +66,8 @@ int mm_init(void) {
  *     Always allocate a block whose size is a multiple of the alignment.
  */
 void *mm_malloc(size_t size) {
+	if (size <= 0)
+		return;
 	size_t heapsize = mem_heapsize();
 	int newsize = ALIGN(size + SIZE_T_SIZE);
 	printf("size: %d\n",newsize);
@@ -75,10 +77,11 @@ void *mm_malloc(size_t size) {
 	} else {
 		char *top = (char *)mem_heap_hi();
 		p = mem_heap_lo();
-		while (p->size != 0 && p->size < newsize && p->free != 1) { // need to add a better check to see if at the end of the heap
-			printf("old: %d %d %d\n",top,p,p->size);
+		mm_check();
+		while (p->size != 0 && p->size < (newsize - SIZE_T_SIZE) && p->free != 1) { // need to add a better check to see if at the end of the heap
+//			printf("old: %d %d %d\n",top,p,p->size);
 			p = (char *)p + p->size;
-			printf("new: %d %d %d\n",top,p,p->size);
+//			printf("new: %d %d %d\n",top,p,p->size);
 		}
 		if (p->free != 1)
 			p = mem_sbrk(newsize);
@@ -96,8 +99,9 @@ void *mm_malloc(size_t size) {
  * mm_free - Freeing a block does nothing.
  */
 void mm_free(void *ptr) {
-	printf("free: %d\n",((header_t *)(ptr))->size);
+	ptr = (char *)(ptr) - SIZE_T_SIZE;
 	((header_t *)(ptr))->free = 1;
+	mm_check();
 }
 
 /*
@@ -133,5 +137,14 @@ void *mm_realloc(void *ptr, size_t size) {
  * Do the pointers in a heap block point to valid heap addresses?
  */
 int mm_check(void) {
+	char *top = (char *)mem_heap_hi();
+	header_t *p = mem_heap_lo();
+	printf("the heap:\n");
+	printf("top\t\tblock\t\tsize\tfree\n");
+	while ((char *)p < top) {
+		printf("%d\t%d\t%d\t%d\n",top,p,p->size,p->free);
+		p = (char *)p + p->size;
+	}
+	printf("\n");
 	return 0;
 }
