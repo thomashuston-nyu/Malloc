@@ -67,7 +67,7 @@ int mm_init(void) {
  */
 void *mm_malloc(size_t size) {
 	if (size <= 0)
-		return;
+		return NULL;
 	size_t heapsize = mem_heapsize();
 	int newsize = ALIGN(size + SIZE_T_SIZE);
 //	printf("size: %d\n",newsize);
@@ -76,22 +76,35 @@ void *mm_malloc(size_t size) {
 		p = mem_sbrk(newsize);
 	} else {
 		char *top = (char *)mem_heap_hi();
-		p = mem_heap_lo();
-//		printf("%d %d %d\n",p->size,newsize,p->free);
-		while (p->size != 0) { // need to add a better check to see if at the end of the heap
-//			printf("%d %d %d\n",p->size,newsize,p->free);
+		p = (header_t *)mem_heap_lo();
+		while (p < top && (p->size < newsize || !p->free)) {
+//			printf("%d\n",p->size);
 			p = (char *)p + p->size;
-			if (p->size >= newsize && p->free)
-				break;
-//			printf("new: %d %d %d\n",top,p,p->size);
 		}
-		if (p->free != 1 || p->size < newsize) {
-//			printf("expand:\t%d %d %d\n",p->size,newsize,p->free);
+//		printf("\n");
+		if (p >= top)
 			p = mem_sbrk(newsize);
-		} else {
-//			printf("leave:\t%d %d %d\n",p->size,newsize,p->free);
-		}
 	}
+//	if (!heapsize) {
+//		p = mem_sbrk(newsize);
+//	} else {
+//		char *top = (char *)mem_heap_hi();
+//		p = mem_heap_lo();
+////		printf("%d %d %d\n",p->size,newsize,p->free);
+//		while (p->size != 0) { // need to add a better check to see if at the end of the heap
+////			printf("%d %d %d\n",p->size,newsize,p->free);
+//			p = (char *)p + p->size;
+//			if (p->size >= newsize && p->free)
+//				break;
+////			printf("new: %d %d %d\n",top,p,p->size);
+//		}
+//		if (p->free != 1 || p->size < newsize) {
+////			printf("expand:\t%d %d %d\n",p->size,newsize,p->free);
+//			p = mem_sbrk(newsize);
+//		} else {
+////			printf("leave:\t%d %d %d\n",p->size,newsize,p->free);
+//		}
+//	}
 	if (p == (void *)-1)
 		return NULL;
 	else {
@@ -100,7 +113,7 @@ void *mm_malloc(size_t size) {
 		p->free = 0;
 //		printf("%d\n",newsize);
 //		printf("%d %d %d\n",p->size,newsize,p->free);
-		mm_check();
+//		mm_check();
 		return (void *)((char *)p + SIZE_T_SIZE);
 	}
 }
@@ -112,7 +125,7 @@ void mm_free(void *ptr) {
 //	mm_check();
 	ptr = (char *)(ptr) - SIZE_T_SIZE;
 	((header_t *)(ptr))->free = 1;
-	mm_check();
+//	mm_check();
 }
 
 /*
