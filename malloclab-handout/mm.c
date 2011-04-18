@@ -35,7 +35,7 @@ team_t team = {
 	/* Second member's full name (leave blank if none) */
 	"Mike Morreale",
 	/* Second member's email address (leave blank if none) */
-	"???@nyu.edu"
+	"mjm737@nyu.edu"
 };
 
 /* single word (4) or double word (8) alignment */
