@@ -56,6 +56,8 @@ typedef struct header_t {
 
 static header_t *free_list;
 
+static header_t *split_block(header_t *p,size_t size);
+
 
 /* 
  * mm_init - initialize the malloc package.
@@ -73,7 +75,7 @@ void *mm_malloc(size_t size) {
 	if (size <= 0)
 		return NULL;
 	size_t heapsize = mem_heapsize();
-	int newsize = ALIGN(size + SIZE_T_SIZE);
+	size_t newsize = ALIGN(size + SIZE_T_SIZE);
 	header_t *p;
 	if (!free_list) {
 		p = mem_sbrk(newsize);
@@ -92,6 +94,9 @@ void *mm_malloc(size_t size) {
 		if (p == 0) {
 			p = mem_sbrk(newsize);
 			p->size = newsize;
+		} else {
+			if (p->size > newsize)
+				p = split_block(p,newsize);
 		}
 	}
 	if (p == (void *)-1)
@@ -107,6 +112,7 @@ void *mm_malloc(size_t size) {
  * mm_free - Freeing a block does nothing.
  */
 void mm_free(void *ptr) {
+//	mm_check();
 	ptr = (char *)(ptr) - SIZE_T_SIZE;
 	((header_t *)(ptr))->free = 1;
 	((header_t *)(ptr))->next = free_list;
@@ -131,6 +137,18 @@ void *mm_realloc(void *ptr, size_t size) {
 	mm_free(oldptr);
 	return newptr;*/
 	return;
+}
+
+static header_t *split_block(header_t *p, size_t size) {
+	if (p->size > size) {
+		header_t *new_block = (char *)p + size;
+		new_block->size = p->size - size;
+		new_block->free = 1;
+		new_block->next = free_list;
+		free_list = new_block;
+		p->size = size;
+	}
+	return p;
 }
 
 /*
