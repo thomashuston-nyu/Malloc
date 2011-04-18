@@ -51,13 +51,17 @@ typedef short free_t;
 typedef struct header_t {
 	free_t free;
 	size_t size;
+	struct header_t *next;
 } header_t;
+
+static header_t *free_list;
 
 
 /* 
  * mm_init - initialize the malloc package.
  */
 int mm_init(void) {
+	free_list = 0;
 	return 0;
 }
 
@@ -67,40 +71,34 @@ int mm_init(void) {
  */
 void *mm_malloc(size_t size) {
 	if (size <= 0)
-		return;
+		return NULL;
 	size_t heapsize = mem_heapsize();
 	int newsize = ALIGN(size + SIZE_T_SIZE);
-//	printf("size: %d\n",newsize);
 	header_t *p;
-	if (!heapsize) {
+	if (!free_list) {
 		p = mem_sbrk(newsize);
+		p->size = newsize;
 	} else {
-		char *top = (char *)mem_heap_hi();
-		p = mem_heap_lo();
-//		printf("%d %d %d\n",p->size,newsize,p->free);
-		while (p->size != 0) { // need to add a better check to see if at the end of the heap
-//			printf("%d %d %d\n",p->size,newsize,p->free);
-			p = (char *)p + p->size;
-			if (p->size >= newsize && p->free)
-				break;
-//			printf("new: %d %d %d\n",top,p,p->size);
+		header_t *x = 0;
+		p = free_list;
+		while (p != 0 && p->size < newsize) {
+			x = p;
+			p = p->next;
 		}
-		if (p->free != 1 || p->size < newsize) {
-//			printf("expand:\t%d %d %d\n",p->size,newsize,p->free);
+		if (p != 0 && x != 0)
+			x->next = p->next;
+		else if (p != 0 && x == 0)
+			free_list = p->next;
+		if (p == 0) {
 			p = mem_sbrk(newsize);
-		} else {
-//			printf("leave:\t%d %d %d\n",p->size,newsize,p->free);
+			p->size = newsize;
 		}
 	}
 	if (p == (void *)-1)
 		return NULL;
 	else {
-		if (!p->size)
-			p->size = newsize;
 		p->free = 0;
-//		printf("%d\n",newsize);
-//		printf("%d %d %d\n",p->size,newsize,p->free);
-		mm_check();
+		p->next = 0;
 		return (void *)((char *)p + SIZE_T_SIZE);
 	}
 }
@@ -109,10 +107,10 @@ void *mm_malloc(size_t size) {
  * mm_free - Freeing a block does nothing.
  */
 void mm_free(void *ptr) {
-//	mm_check();
 	ptr = (char *)(ptr) - SIZE_T_SIZE;
 	((header_t *)(ptr))->free = 1;
-	mm_check();
+	((header_t *)(ptr))->next = free_list;
+	free_list = ptr;
 }
 
 /*
@@ -155,6 +153,14 @@ int mm_check(void) {
 	while ((char *)p < top) {
 		printf("%d\t%d\t%d\t%d\n",top,p,p->size,p->free);
 		p = (char *)p + p->size;
+	}
+	printf("\n");
+	printf("the free list:\n");
+	printf("block\t\tnext\t\tsize\tfree\n");
+	p = free_list;
+	while (p != 0) {
+		printf("%d\t%11d\t%d\t%d\n",p,p->next,p->size,p->free);
+		p = p->next;
 	}
 	printf("\n");
 	return 0;
