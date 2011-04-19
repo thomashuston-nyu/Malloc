@@ -26,16 +26,16 @@
  * provide your team information in the following struct.
  ********************************************************/
 team_t team = {
-	/* Team name */
-	"Mike & Thomas",
-	/* First member's full name */
-	"Thomas Huston",
-	/* First member's NYU NetID*/
-	"tph227@nyu.edu",
-	/* Second member's full name (leave blank if none) */
-	"Mike Morreale",
-	/* Second member's email address (leave blank if none) */
-	"mjm737@nyu.edu"
+		/* Team name */
+		"Mike & Thomas",
+		/* First member's full name */
+		"Thomas Huston",
+		/* First member's NYU NetID*/
+		"tph227@nyu.edu",
+		/* Second member's full name (leave blank if none) */
+		"Mike Morreale",
+		/* Second member's email address (leave blank if none) */
+		"mjm737@nyu.edu"
 };
 
 /* single word (4) or double word (8) alignment */
@@ -46,24 +46,40 @@ team_t team = {
 
 #define SIZE_T_SIZE (ALIGN(sizeof(header_t)))
 
-typedef short free_t;
+#define MIN_SIZE 8
+
+#define ALLOC '0'
+#define FREE '1'
+#define END '2'
 
 typedef struct header_t {
-	free_t free;
+	char status;
 	size_t size;
+	struct header_t *prev;
 	struct header_t *next;
 } header_t;
 
 static header_t *free_list;
 
-static header_t *split_block(header_t *p,size_t size);
+static header_t *split_block(header_t *p, size_t size);
 
 
 /* 
  * mm_init - initialize the malloc package.
  */
 int mm_init(void) {
-	free_list = 0;
+	// prologue
+	header_t *prologue = (header_t *)mem_sbrk(SIZE_T_SIZE);
+	prologue->prev = 0;
+	prologue->size = SIZE_T_SIZE;
+	prologue->status = END;
+	header_t *epilogue = (header_t *)mem_sbrk(SIZE_T_SIZE);
+	epilogue->next = 0;
+	epilogue->size = SIZE_T_SIZE;
+	epilogue->status = END;
+	epilogue->prev = prologue;
+	prologue->next = epilogue;
+	free_list = prologue;
 	return 0;
 }
 
@@ -74,27 +90,24 @@ int mm_init(void) {
 void *mm_malloc(size_t size) {
 	if (size <= 0)
 		return NULL;
-	size_t heapsize = mem_heapsize();
+	else if (size < MIN_SIZE)
+		size = MIN_SIZE;
 	size_t newsize = ALIGN(size + SIZE_T_SIZE);
 	header_t *p;
 	if (!free_list) {
 		p = mem_sbrk(newsize);
 		p->size = newsize;
 	} else {
-		header_t *x = 0;
 		p = free_list;
 		while (p != 0 && p->size < newsize) {
-			x = p;
 			p = p->next;
 		}
-		if (p != 0 && x != 0)
-			x->next = p->next;
-		else if (p != 0 && x == 0)
-			free_list = p->next;
 		if (p == 0) {
 			p = mem_sbrk(newsize);
 			p->size = newsize;
 		} else {
+			p->prev->next = p->next;
+			p->next->prev = p->prev;
 			if (p->size > newsize)
 				p = split_block(p,newsize);
 		}
@@ -102,8 +115,9 @@ void *mm_malloc(size_t size) {
 	if (p == (void *)-1)
 		return NULL;
 	else {
-		p->free = 0;
+		p->status = ALLOC;
 		p->next = 0;
+		p->prev = 0;
 		return (void *)((char *)p + SIZE_T_SIZE);
 	}
 }
@@ -114,9 +128,19 @@ void *mm_malloc(size_t size) {
 void mm_free(void *ptr) {
 //	mm_check();
 	ptr = (char *)(ptr) - SIZE_T_SIZE;
-	((header_t *)(ptr))->free = 1;
-	((header_t *)(ptr))->next = free_list;
-	free_list = ptr;
+	void *free = (void *)free_list;
+	while (free < ptr) {
+		if (((header_t *)(free))->next->status == END)
+			break;
+		else
+			free = ((header_t *)(free))->next;
+	}
+	((header_t *)(ptr))->status = FREE;
+	((header_t *)(ptr))->prev = ((header_t *)(free));
+	((header_t *)(ptr))->next = ((header_t *)(free))->next;
+	((header_t *)(free))->next->prev = ((header_t *)(ptr));
+	((header_t *)(free))->next = ((header_t *)(ptr));
+//	mm_check();
 }
 
 /*
@@ -143,9 +167,11 @@ static header_t *split_block(header_t *p, size_t size) {
 	if (p->size > size) {
 		header_t *new_block = (char *)p + size;
 		new_block->size = p->size - size;
-		new_block->free = 1;
-		new_block->next = free_list;
-		free_list = new_block;
+		new_block->status = FREE;
+		new_block->next = p->next;
+		new_block->prev = p->prev;
+		new_block->next->prev = new_block;
+		new_block->prev->next = new_block;
 		p->size = size;
 	}
 	return p;
@@ -167,17 +193,17 @@ int mm_check(void) {
 	char *top = (char *)mem_heap_hi();
 	header_t *p = mem_heap_lo();
 	printf("the heap:\n");
-	printf("top\t\tblock\t\tsize\tfree\n");
+	printf("block\t\tprev\t\tnext\t\tsize\tstatus\n");
 	while ((char *)p < top) {
-		printf("%d\t%d\t%d\t%d\n",top,p,p->size,p->free);
+		printf("%d\t%11d\t%11d\t%d\t%c\n",p,p->prev,p->next,p->size,p->status);
 		p = (char *)p + p->size;
 	}
 	printf("\n");
 	printf("the free list:\n");
-	printf("block\t\tnext\t\tsize\tfree\n");
+	printf("block\t\tprev\t\tnext\t\tsize\tstatus\n");
 	p = free_list;
 	while (p != 0) {
-		printf("%d\t%11d\t%d\t%d\n",p,p->next,p->size,p->free);
+		printf("%d\t%11d\t%11d\t%d\t%c\n",p,p->prev,p->next,p->size,p->status);
 		p = p->next;
 	}
 	printf("\n");
