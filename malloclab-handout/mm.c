@@ -62,6 +62,7 @@ typedef struct header_t {
 static header_t *free_list;
 
 static header_t *split_block(header_t *p, size_t size);
+static header_t *coalesce(header_t *p);
 
 
 /* 
@@ -108,8 +109,9 @@ void *mm_malloc(size_t size) {
 		} else {
 			p->prev->next = p->next;
 			p->next->prev = p->prev;
-			if (p->size > newsize)
+			if (p->size > newsize && (signed)(p->size - newsize) >= ALIGN(MIN_SIZE + SIZE_T_SIZE)) {
 				p = split_block(p,newsize);
+			}
 		}
 	}
 	if (p == (void *)-1)
@@ -127,19 +129,20 @@ void *mm_malloc(size_t size) {
  */
 void mm_free(void *ptr) {
 //	mm_check();
-	ptr = (char *)(ptr) - SIZE_T_SIZE;
-	void *free = (void *)free_list;
-	while (free < ptr) {
-		if (((header_t *)(free))->next->status == END)
+	header_t *p = (header_t *)((char *)(ptr) - SIZE_T_SIZE);
+	header_t *free = free_list;
+	while (free < p) {
+		if (free->next->status == END)
 			break;
 		else
-			free = ((header_t *)(free))->next;
+			free = free->next;
 	}
-	((header_t *)(ptr))->status = FREE;
-	((header_t *)(ptr))->prev = ((header_t *)(free));
-	((header_t *)(ptr))->next = ((header_t *)(free))->next;
-	((header_t *)(free))->next->prev = ((header_t *)(ptr));
-	((header_t *)(free))->next = ((header_t *)(ptr));
+	p = coalesce(p);
+	p->status = FREE;
+	p->prev = free;
+	p->next = free->next;
+	free->next->prev = p;
+	free->next = p;
 //	mm_check();
 }
 
@@ -164,16 +167,18 @@ void *mm_realloc(void *ptr, size_t size) {
 }
 
 static header_t *split_block(header_t *p, size_t size) {
-	if (p->size > size) {
-		header_t *new_block = (char *)p + size;
-		new_block->size = p->size - size;
-		new_block->status = FREE;
-		new_block->next = p->next;
-		new_block->prev = p->prev;
-		new_block->next->prev = new_block;
-		new_block->prev->next = new_block;
-		p->size = size;
-	}
+	header_t *new_block = (char *)p + size;
+	new_block->size = p->size - size;
+	new_block->status = FREE;
+	new_block->next = p->next;
+	new_block->prev = p->prev;
+	new_block->next->prev = new_block;
+	new_block->prev->next = new_block;
+	p->size = size;
+	return p;
+}
+
+static header_t *coalesce(header_t *p) {
 	return p;
 }
 
@@ -195,7 +200,7 @@ int mm_check(void) {
 	printf("the heap:\n");
 	printf("block\t\tprev\t\tnext\t\tsize\tstatus\n");
 	while ((char *)p < top) {
-		printf("%d\t%11d\t%11d\t%d\t%c\n",p,p->prev,p->next,p->size,p->status);
+		printf("%x\t%11x\t%11x\t%d\t%c\n",p,p->prev,p->next,p->size,p->status);
 		p = (char *)p + p->size;
 	}
 	printf("\n");
@@ -203,7 +208,7 @@ int mm_check(void) {
 	printf("block\t\tprev\t\tnext\t\tsize\tstatus\n");
 	p = free_list;
 	while (p != 0) {
-		printf("%d\t%11d\t%11d\t%d\t%c\n",p,p->prev,p->next,p->size,p->status);
+		printf("%x\t%11x\t%11x\t%d\t%c\n",p,p->prev,p->next,p->size,p->status);
 		p = p->next;
 	}
 	printf("\n");
