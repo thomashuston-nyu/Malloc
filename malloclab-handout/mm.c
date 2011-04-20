@@ -44,7 +44,7 @@ team_t team = {
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
 
-#define SIZE_T_SIZE (ALIGN(sizeof(header_t)))
+#define SIZE_T_SIZE (ALIGN(2*sizeof(header_t)))
 
 #define MIN_SIZE 8
 
@@ -130,20 +130,17 @@ void *mm_malloc(size_t size) {
 void mm_free(void *ptr) {
 //	mm_check();
 	header_t *p = (header_t *)((char *)(ptr) - SIZE_T_SIZE);
-	header_t *free = free_list;
-	while (free < p) {
-		if (free->next->status == END)
-			break;
-		else
-			free = free->next;
+	header_t *free = free_list->next;
+	while (free < p && free->status != END) {
+		free = free->next;
 	}
-	p = coalesce(p);
 	p->status = FREE;
-	p->prev = free;
-	p->next = free->next;
-	free->next->prev = p;
-	free->next = p;
-//	mm_check();
+	p->prev = free->prev;
+	free->prev = p;
+	p->next = free;
+	p->prev->next = p;
+	p = coalesce(p);
+	mm_check();
 }
 
 /*
@@ -179,7 +176,30 @@ static header_t *split_block(header_t *p, size_t size) {
 }
 
 static header_t *coalesce(header_t *p) {
-	return p;
+	header_t *prev = (p->prev->status != END && ((char *)(p->prev) + p->prev->size) == p) ? p->prev : 0;
+	header_t *next = (p->next->status != END && ((char *)(p) + p->size) != next) ? p->next : 0;
+
+	if (prev == 0 && next == 0)
+		return p;
+
+	header_t *new_block;
+	if (prev != 0 && next == 0) {
+		new_block = prev;
+		new_block->size = prev->size + p->size;
+		new_block->next = p->next;
+		new_block->next->prev = new_block;
+	} else if (prev == 0 && next != 0) {
+		new_block = p;
+		new_block->size = p->size + next->size;
+		new_block->next = next->next;
+		new_block->next->prev = new_block;
+	} else {
+		new_block = prev;
+		new_block->size = prev->size + p->size + next->size;
+		new_block->next = next->next;
+		new_block->next->prev = new_block;
+	}
+	return new_block;
 }
 
 /*
