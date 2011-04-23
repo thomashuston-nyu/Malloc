@@ -44,9 +44,15 @@ team_t team = {
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
 
-#define SIZE_T_SIZE (ALIGN(2*sizeof(header_t)))
+#define HEADER_SIZE (sizeof(header_t))
+#define FOOTER_SIZE (sizeof(footer_t))
+#define SIZE_T_SIZE (ALIGN(HEADER_SIZE + FOOTER_SIZE))
 
 #define MIN_SIZE 8
+
+#define GET_FOOTER(p) ((char *)p + (p->size - FOOTER_SIZE))
+#define GET_PREV_BLOCK(p) (((footer_t *)((char *)p - FOOTER_SIZE))->header)
+#define GET_NEXT_BLOCK(p) ((char *)p + p->size)
 
 #define ALLOC '0'
 #define FREE '1'
@@ -59,6 +65,10 @@ typedef struct header_t {
 	struct header_t *next;
 } header_t;
 
+typedef struct footer_t {
+	struct header_t *header;
+} footer_t;
+
 static header_t *free_list;
 
 static header_t *split_block(header_t *p, size_t size);
@@ -69,18 +79,7 @@ static header_t *coalesce(header_t *p);
  * mm_init - initialize the malloc package.
  */
 int mm_init(void) {
-	// prologue
-	header_t *prologue = (header_t *)mem_sbrk(SIZE_T_SIZE);
-	prologue->prev = 0;
-	prologue->size = SIZE_T_SIZE;
-	prologue->status = END;
-	header_t *epilogue = (header_t *)mem_sbrk(SIZE_T_SIZE);
-	epilogue->next = 0;
-	epilogue->size = SIZE_T_SIZE;
-	epilogue->status = END;
-	epilogue->prev = prologue;
-	prologue->next = epilogue;
-	free_list = prologue;
+	free_list = 0;
 	return 0;
 }
 
@@ -105,22 +104,28 @@ void *mm_malloc(size_t size) {
 		}
 		if (p == 0) {
 			p = mem_sbrk(newsize);
-			p->size = newsize;
+			if (p != (void *)-1)
+				p->size = newsize;
 		} else {
-			p->prev->next = p->next;
-			p->next->prev = p->prev;
+			if (p->prev != 0)
+				p->prev->next = p->next;
+			if (p->next != 0)
+				p->next->prev = p->prev;
+			if (free_list == p)
+				free_list = p->next;
 			if (p->size > newsize && (signed)(p->size - newsize) >= ALIGN(MIN_SIZE + SIZE_T_SIZE)) {
 				p = split_block(p,newsize);
 			}
 		}
 	}
-	if (p == (void *)-1)
+	if (p == (void *)-1) {
 		return NULL;
-	else {
+	} else {
 		p->status = ALLOC;
 		p->next = 0;
 		p->prev = 0;
-		return (void *)((char *)p + SIZE_T_SIZE);
+		((footer_t *)GET_FOOTER(p))->header = p;
+		return (void *)((char *)p + HEADER_SIZE);
 	}
 }
 
@@ -128,19 +133,15 @@ void *mm_malloc(size_t size) {
  * mm_free - Freeing a block does nothing.
  */
 void mm_free(void *ptr) {
-//	mm_check();
-	header_t *p = (header_t *)((char *)(ptr) - SIZE_T_SIZE);
-	header_t *free = free_list->next;
-	while (free < p && free->status != END) {
-		free = free->next;
-	}
+	header_t *p = (header_t *)((char *)(ptr) - HEADER_SIZE);
+	header_t *free = free_list;
 	p->status = FREE;
-	p->prev = free->prev;
-	free->prev = p;
+	p->prev = 0;
 	p->next = free;
-	p->prev->next = p;
+	if (free != 0)
+		free->prev = p;
+	free_list = p;
 	p = coalesce(p);
-	mm_check();
 }
 
 /*
@@ -169,36 +170,89 @@ static header_t *split_block(header_t *p, size_t size) {
 	new_block->status = FREE;
 	new_block->next = p->next;
 	new_block->prev = p->prev;
-	new_block->next->prev = new_block;
-	new_block->prev->next = new_block;
+	if (new_block->next != 0)
+		new_block->next->prev = new_block;
+	if (new_block->prev != 0)
+		new_block->prev->next = new_block;
+	else
+		free_list = new_block;
 	p->size = size;
+	((footer_t *)GET_FOOTER(p))->header = p;
+	((footer_t *)GET_FOOTER(new_block))->header = new_block;
 	return p;
 }
 
 static header_t *coalesce(header_t *p) {
-	header_t *prev = (p->prev->status != END && ((char *)(p->prev) + p->prev->size) == p) ? p->prev : 0;
-	header_t *next = (p->next->status != END && ((char *)(p) + p->size) != next) ? p->next : 0;
+	header_t *prev = (header_t *)GET_PREV_BLOCK(p);
+	header_t *next = (header_t *)GET_NEXT_BLOCK(p);
+	char *lo = mem_heap_lo();
+	char *hi = mem_heap_hi();
 
-	if (prev == 0 && next == 0)
+	if (prev < lo || prev > hi)
+		prev = 0;
+	else
+		prev = prev->status == FREE ? prev : 0;
+	if (next < lo || next > hi)
+		next = 0;
+	else
+		next = next->status == FREE ? next : 0;
+
+	if (prev == 0 && next == 0) {
 		return p;
+	}
 
 	header_t *new_block;
-	if (prev != 0 && next == 0) {
+	if (prev && !next) {
 		new_block = prev;
-		new_block->size = prev->size + p->size;
+		if (prev->next != p) {
+			if (prev->prev != 0)
+				prev->prev->next = prev->next;
+			if (prev->next != 0)
+				prev->next->prev = prev->prev;
+		}
 		new_block->next = p->next;
-		new_block->next->prev = new_block;
-	} else if (prev == 0 && next != 0) {
+		if (new_block->next != 0)
+			new_block->next->prev = new_block;
+		new_block->prev = 0;
+		new_block->size = prev->size + p->size;
+		free_list = new_block;
+	} else if (!prev && next) {
 		new_block = p;
+		if (p->next == next) {
+			new_block->next = next->next;
+			if (new_block->next != 0)
+				new_block->next->prev = new_block;
+		} else {
+			if (next->prev != 0)
+				next->prev->next = next->next;
+			if (next->next != 0)
+				next->next->prev = next->prev;
+		}
 		new_block->size = p->size + next->size;
-		new_block->next = next->next;
-		new_block->next->prev = new_block;
 	} else {
 		new_block = prev;
+		if (prev->next != p) {
+			if (prev->prev != 0)
+				prev->prev->next = prev->next;
+			if (prev->next != 0)
+				prev->next->prev = prev->prev;
+		}
+		new_block->prev = 0;
+		if (p->next == next) {
+			new_block->next = next->next;
+		} else {
+			new_block->next = p->next;
+			if (next->prev != 0)
+				next->prev->next = next->next;
+			if (next->next != 0)
+				next->next->prev = next->prev;
+		}
+		if (new_block->next != 0)
+			new_block->next->prev = new_block;
 		new_block->size = prev->size + p->size + next->size;
-		new_block->next = next->next;
-		new_block->next->prev = new_block;
+		free_list = new_block;
 	}
+	((footer_t *)GET_FOOTER(new_block))->header = new_block;
 	return new_block;
 }
 
@@ -217,18 +271,18 @@ static header_t *coalesce(header_t *p) {
 int mm_check(void) {
 	char *top = (char *)mem_heap_hi();
 	header_t *p = mem_heap_lo();
-	printf("the heap:\n");
-	printf("block\t\tprev\t\tnext\t\tsize\tstatus\n");
+	printf("\nthe heap:\n");
+	printf("block\t\tprev\t\tnext\t\tfooter\t\tsize\tstatus\n");
 	while ((char *)p < top) {
-		printf("%x\t%11x\t%11x\t%d\t%c\n",p,p->prev,p->next,p->size,p->status);
-		p = (char *)p + p->size;
+		printf("%11x\t%11x\t%11x\t%11x\t%d\t%c\n",p,p->prev,p->next,((footer_t *)GET_FOOTER(p))->header,p->size,p->status);
+		p = GET_NEXT_BLOCK(p);
 	}
 	printf("\n");
 	printf("the free list:\n");
 	printf("block\t\tprev\t\tnext\t\tsize\tstatus\n");
 	p = free_list;
 	while (p != 0) {
-		printf("%x\t%11x\t%11x\t%d\t%c\n",p,p->prev,p->next,p->size,p->status);
+		printf("%11x\t%11x\t%11x\t%d\t%c\n",p,p->prev,p->next,p->size,p->status);
 		p = p->next;
 	}
 	printf("\n");
