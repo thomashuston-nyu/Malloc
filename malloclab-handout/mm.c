@@ -148,20 +148,34 @@ void mm_free(void *ptr) {
  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
  */
 void *mm_realloc(void *ptr, size_t size) {
-	/*void *oldptr = ptr;
-	void *newptr;
-	size_t copySize;
-
-	newptr = mm_malloc(size);
-	if (newptr == NULL)
+	if (ptr == NULL)
+		return mm_malloc(size);
+	else if (size <= 0) {
+		mm_free(ptr);
 		return NULL;
-	copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
-	if (size < copySize)
-		copySize = size;
-	memcpy(newptr, oldptr, copySize);
-	mm_free(oldptr);
-	return newptr;*/
-	return;
+	} else {
+		header_t *old_block = (header_t *)((char *)ptr - HEADER_SIZE);
+		if (size < MIN_SIZE)
+			size = MIN_SIZE;
+		size_t newsize = ALIGN(size + SIZE_T_SIZE);
+		if (old_block->size < newsize) {
+			header_t *new_block = (char *)mm_malloc(newsize) - HEADER_SIZE;
+			memmove((char *)new_block + HEADER_SIZE, (char *)old_block + HEADER_SIZE, ((header_t *)old_block)->size);
+			mm_free((char *)old_block + HEADER_SIZE);
+			return (char *)new_block + HEADER_SIZE;
+		} /*else if (old_block->size > newsize) {
+			header_t *new_block = (char *)old_block + newsize;
+			new_block->status = ALLOC;
+			new_block->size = old_block->size - newsize;
+			new_block->prev = 0;
+			new_block->next = 0;
+			old_block->size = newsize;
+			((footer_t *)GET_FOOTER(old_block))->header = old_block;
+			((footer_t *)GET_FOOTER(new_block))->header = new_block;
+			mm_free((char *)new_block + HEADER_SIZE);
+		}*/
+		return (char *)old_block + HEADER_SIZE;
+	}
 }
 
 static header_t *split_block(header_t *p, size_t size) {
