@@ -49,14 +49,24 @@ team_t team = {
 #define SIZE_T_SIZE (ALIGN(HEADER_SIZE + FOOTER_SIZE))
 
 #define MIN_SIZE 8
+#define MIN_BLOCK_SIZE (ALIGN(MIN_SIZE + SIZE_T_SIZE))
 
-#define GET_FOOTER(p) ((char *)p + (p->size - FOOTER_SIZE))
-#define GET_PREV_BLOCK(p) (((footer_t *)((char *)p - FOOTER_SIZE))->header)
-#define GET_NEXT_BLOCK(p) ((char *)p + p->size)
+#define GET_HEADER(p) ((header_t *)((char *)(p) - HEADER_SIZE));
+#define GET_BODY(p) ((void *)((char *)p + HEADER_SIZE))
+#define GET_FOOTER(p) ((footer_t *)((char *)p + (p->size - FOOTER_SIZE)))
+
+#define GET_BLOCK(p,size) ((header_t *)((char *)p + size))
+#define GET_PREV_BLOCK(p) ((header_t *)(((footer_t *)((char *)p - FOOTER_SIZE))->header))
+#define GET_NEXT_BLOCK(p) ((header_t *)((char *)p + p->size))
+
+#define IS_VALID_BLOCK(p) ((char *)p >= (char *)mem_heap_lo() && (char *)p <= (char *)mem_heap_hi())
+
+#define SET_FOOTER(p) (((footer_t *)GET_FOOTER(p))->header = p)
 
 #define ALLOC '0'
 #define FREE '1'
-#define END '2'
+
+#define NULL_BLOCK (void *)-1
 
 typedef struct header_t {
 	char status;
@@ -73,6 +83,11 @@ static header_t *free_list;
 
 static header_t *split_block(header_t *p, size_t size);
 static header_t *coalesce(header_t *p);
+static header_t *new_block(size_t size);
+static header_t *find_block(size_t size);
+static void set_alloc(header_t *p);
+static void set_free(header_t *p);
+static void remove_from_free_list(header_t *p);
 
 
 /* 
@@ -90,57 +105,21 @@ int mm_init(void) {
 void *mm_malloc(size_t size) {
 	if (size <= 0)
 		return NULL;
-	else if (size < MIN_SIZE)
-		size = MIN_SIZE;
-	size_t newsize = ALIGN(size + SIZE_T_SIZE);
-	header_t *p;
-	if (!free_list) {
-		p = mem_sbrk(newsize);
-		p->size = newsize;
-	} else {
-		p = free_list;
-		while (p != 0 && p->size < newsize) {
-			p = p->next;
-		}
-		if (p == 0) {
-			p = mem_sbrk(newsize);
-			if (p != (void *)-1)
-				p->size = newsize;
-		} else {
-			if (p->prev != 0)
-				p->prev->next = p->next;
-			if (p->next != 0)
-				p->next->prev = p->prev;
-			if (free_list == p)
-				free_list = p->next;
-			if (p->size > newsize && (p->size - newsize) >= ALIGN(MIN_SIZE + SIZE_T_SIZE))
-				p = split_block(p,newsize);
-		}
-	}
-	if (p == (void *)-1) {
-		return NULL;
-	} else {
-		p->status = ALLOC;
-		p->next = 0;
-		p->prev = 0;
-		((footer_t *)GET_FOOTER(p))->header = p;
-		return (void *)((char *)p + HEADER_SIZE);
-	}
+	header_t *p = find_block(size);
+	if (p == NULL_BLOCK)
+		if ((p = new_block(size)) == NULL_BLOCK)
+			return NULL;
+	set_alloc(p);
+	return GET_BODY(p);
 }
 
 /*
  * mm_free - Freeing a block does nothing.
  */
 void mm_free(void *ptr) {
-	header_t *p = (header_t *)((char *)(ptr) - HEADER_SIZE);
-	header_t *free = free_list;
-	p->status = FREE;
-	p->prev = 0;
-	p->next = free;
-	if (free != 0)
-		free->prev = p;
-	free_list = p;
-	p = coalesce(p);
+	header_t *p = GET_HEADER(ptr);
+	set_free(p);
+	coalesce(p);
 }
 
 /*
@@ -153,25 +132,19 @@ void *mm_realloc(void *ptr, size_t size) {
 		mm_free(ptr);
 		return NULL;
 	} else {
-		header_t *old_block = (header_t *)((char *)ptr - HEADER_SIZE);
+		header_t *old_block = GET_HEADER(ptr);
 		if (size < MIN_SIZE)
 			size = MIN_SIZE;
 		size_t newsize = ALIGN(size + SIZE_T_SIZE);
 		size_t oldsize = old_block->size;
 		if (old_block->size < newsize) {
-			header_t *prev = (header_t *)GET_PREV_BLOCK(old_block);
-			header_t *next = (header_t *)GET_NEXT_BLOCK(old_block);
-			char *lo = mem_heap_lo();
-			char *hi = mem_heap_hi();
+			header_t *prev = GET_PREV_BLOCK(old_block);
+			header_t *next = GET_NEXT_BLOCK(old_block);
 
-			if ((char *)prev < lo || (char *)prev > hi)
+			if (!IS_VALID_BLOCK(prev) || prev->status == ALLOC)
 				prev = 0;
-			else
-				prev = prev->status == FREE ? prev : 0;
-			if ((char *)next < lo || (char *)next > hi)
+			if (!IS_VALID_BLOCK(next) || next->status == ALLOC)
 				next = 0;
-			else
-				next = next->status == FREE ? next : 0;
 
 			if (prev != 0 && next != 0 && prev->size + old_block->size + next->size < newsize) {
 				prev = 0;
@@ -185,127 +158,126 @@ void *mm_realloc(void *ptr, size_t size) {
 			header_t *new_block;
 
 			if (prev == 0 && next == 0) {
-				new_block = (header_t *)((char *)mm_malloc(newsize) - HEADER_SIZE);
-				memcpy((char *)new_block + HEADER_SIZE, (char *)old_block + HEADER_SIZE, old_block->size);
-				mm_free((char *)old_block + HEADER_SIZE);
-				return (char *)new_block + HEADER_SIZE;
+				new_block = GET_HEADER(mm_malloc(newsize));
+				memcpy(GET_BODY(new_block),GET_BODY(old_block),oldsize);
+				mm_free(GET_BODY(old_block));
+				return GET_BODY(new_block);
 			} else {
-				header_t *free = free_list;
-				old_block->status = FREE;
-				old_block->prev = 0;
-				old_block->next = free;
-				if (free != 0)
-					free->prev = old_block;
-				free_list = old_block;
+				set_free(old_block);
 				new_block = coalesce(old_block);
-				if (new_block->next != 0)
-					new_block->next->prev = 0;
-				free_list = new_block->next;
+				remove_from_free_list(new_block);
 				if (new_block != old_block)
-					memcpy((char *)new_block + HEADER_SIZE, (char *)old_block + HEADER_SIZE, oldsize);
-//				if (new_block->size > newsize && (new_block->size - newsize) >= ALIGN(MIN_SIZE + SIZE_T_SIZE))
-//					new_block = split_block(new_block,newsize);
-				new_block->status = ALLOC;
-				return (char *)new_block + HEADER_SIZE;
+					memcpy(GET_BODY(new_block),GET_BODY(old_block),oldsize);
+//				new_block = split_block(new_block,newsize);
+				set_alloc(new_block);
+				return GET_BODY(new_block);
 			}
 		} /*else if (old_block->size > newsize) {
 			old_block = split_block(old_block,newsize);
-			old_block->status = ALLOC;
+			set_alloc(old_block);
 		}*/
-		return (char *)old_block + HEADER_SIZE;
+		return GET_BODY(old_block);
 	}
 }
 
 static header_t *split_block(header_t *p, size_t size) {
-	header_t *new_block = (header_t *)((char *)p + size);
-	new_block->size = p->size - size;
-	new_block->status = FREE;
-	new_block->next = p->next;
-	new_block->prev = p->prev;
-	if (new_block->next != 0)
-		new_block->next->prev = new_block;
-	if (new_block->prev != 0)
-		new_block->prev->next = new_block;
-	else
-		free_list = new_block;
-	p->size = size;
-	((footer_t *)GET_FOOTER(p))->header = p;
-	((footer_t *)GET_FOOTER(new_block))->header = new_block;
+	if (p->size >= size && (p->size - size) >= MIN_BLOCK_SIZE) {
+		header_t *new_block = GET_BLOCK(p,size);
+		new_block->size = p->size - size;
+		set_free(new_block);
+		SET_FOOTER(new_block);
+		p->size = size;
+		SET_FOOTER(p);
+	}
 	return p;
 }
 
 static header_t *coalesce(header_t *p) {
-	header_t *prev = (header_t *)GET_PREV_BLOCK(p);
-	header_t *next = (header_t *)GET_NEXT_BLOCK(p);
-	char *lo = mem_heap_lo();
-	char *hi = mem_heap_hi();
+	header_t *prev = GET_PREV_BLOCK(p);
+	header_t *next = GET_NEXT_BLOCK(p);
 
-	if ((char *)prev < lo || (char *)prev > hi)
+	if (!IS_VALID_BLOCK(prev) || prev->status == ALLOC)
 		prev = 0;
-	else
-		prev = prev->status == FREE ? prev : 0;
-	if ((char *)next < lo || (char *)next > hi)
+	if (!IS_VALID_BLOCK(next) || next->status == ALLOC)
 		next = 0;
-	else
-		next = next->status == FREE ? next : 0;
 
 	if (prev == 0 && next == 0) {
 		return p;
 	}
 
 	header_t *new_block;
+	remove_from_free_list(p);
 	if (prev && !next) {
+		remove_from_free_list(prev);
 		new_block = prev;
-		if (prev->next != p) {
-			if (prev->prev != 0)
-				prev->prev->next = prev->next;
-			if (prev->next != 0)
-				prev->next->prev = prev->prev;
-		}
-		new_block->next = p->next;
-		if (new_block->next != 0)
-			new_block->next->prev = new_block;
-		new_block->prev = 0;
 		new_block->size = prev->size + p->size;
-		free_list = new_block;
 	} else if (!prev && next) {
+		remove_from_free_list(next);
 		new_block = p;
-		if (p->next == next) {
-			new_block->next = next->next;
-			if (new_block->next != 0)
-				new_block->next->prev = new_block;
-		} else {
-			if (next->prev != 0)
-				next->prev->next = next->next;
-			if (next->next != 0)
-				next->next->prev = next->prev;
-		}
 		new_block->size = p->size + next->size;
 	} else {
+		remove_from_free_list(prev);
+		remove_from_free_list(next);
 		new_block = prev;
-		if (prev->next != p) {
-			if (prev->prev != 0)
-				prev->prev->next = prev->next;
-			if (prev->next != 0)
-				prev->next->prev = prev->prev;
-		}
-		new_block->prev = 0;
-		if (p->next == next) {
-			new_block->next = next->next;
-		} else {
-			new_block->next = p->next;
-			if (next->prev != 0)
-				next->prev->next = next->next;
-			if (next->next != 0)
-				next->next->prev = next->prev;
-		}
-		if (new_block->next != 0)
-			new_block->next->prev = new_block;
 		new_block->size = prev->size + p->size + next->size;
-		free_list = new_block;
 	}
-	((footer_t *)GET_FOOTER(new_block))->header = new_block;
+	set_free(new_block);
+	SET_FOOTER(new_block);
 	return new_block;
+}
+
+static header_t *new_block(size_t size) {
+	if (size <= 0)
+		return NULL_BLOCK;
+	if (size < MIN_SIZE)
+		size = MIN_SIZE;
+	size = ALIGN(size + SIZE_T_SIZE);
+	header_t *p = mem_sbrk(size);
+	if (p == NULL_BLOCK)
+		return NULL_BLOCK;
+	p->size = size;
+	SET_FOOTER(p);
+	return p;
+}
+
+static header_t *find_block(size_t size) {
+	if (size <= 0 || !free_list)
+		return NULL_BLOCK;
+	if (size < MIN_SIZE)
+		size = MIN_SIZE;
+	size = ALIGN(size + SIZE_T_SIZE);
+	header_t *p = free_list;
+	while (p != 0 && p->size < size) {
+		p = p->next;
+	}
+	if (p == 0)
+		return NULL_BLOCK;
+	remove_from_free_list(p);
+	return split_block(p,size);
+}
+
+static void set_alloc(header_t *p) {
+	p->status = ALLOC;
+	p->next = 0;
+	p->prev = 0;
+}
+
+static void set_free(header_t *p) {
+	p->status = FREE;
+	p->prev = 0;
+	p->next = free_list;
+	if (free_list != 0)
+		free_list->prev = p;
+	free_list = p;
+}
+
+static void remove_from_free_list(header_t *p) {
+	if (p->prev != 0)
+		p->prev->next = p->next;
+	if (p->next != 0)
+		p->next->prev = p->prev;
+	if (free_list == p)
+		free_list = p->next;
 }
 
 /*
