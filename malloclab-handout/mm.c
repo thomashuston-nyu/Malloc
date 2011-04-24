@@ -55,6 +55,8 @@ team_t team = {
 #define GET_BODY(p) ((void *)((char *)p + HEADER_SIZE))
 #define GET_FOOTER(p) ((footer_t *)((char *)p + (p->size - FOOTER_SIZE)))
 
+#define GET_BODY_SIZE(size) (size - SIZE_T_SIZE)
+
 #define GET_BLOCK(p,size) ((header_t *)((char *)p + size))
 #define GET_PREV_BLOCK(p) ((header_t *)(((footer_t *)((char *)p - FOOTER_SIZE))->header))
 #define GET_NEXT_BLOCK(p) ((header_t *)((char *)p + p->size))
@@ -159,15 +161,16 @@ void *mm_realloc(void *ptr, size_t size) {
 
 			if (prev == 0 && next == 0) {
 				new_block = GET_HEADER(mm_malloc(newsize));
-				memcpy(GET_BODY(new_block),GET_BODY(old_block),oldsize);
+				memcpy(GET_BODY(new_block),GET_BODY(old_block),GET_BODY_SIZE(oldsize));
 				mm_free(GET_BODY(old_block));
+				set_alloc(new_block);
 				return GET_BODY(new_block);
 			} else {
 				set_free(old_block);
 				new_block = coalesce(old_block);
 				remove_from_free_list(new_block);
 				if (new_block != old_block)
-					memcpy(GET_BODY(new_block),GET_BODY(old_block),oldsize);
+					memcpy(GET_BODY(new_block),GET_BODY(old_block),GET_BODY_SIZE(oldsize));
 //				new_block = split_block(new_block,newsize);
 				set_alloc(new_block);
 				return GET_BODY(new_block);
