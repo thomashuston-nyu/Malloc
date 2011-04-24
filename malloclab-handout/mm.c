@@ -113,9 +113,8 @@ void *mm_malloc(size_t size) {
 				p->next->prev = p->prev;
 			if (free_list == p)
 				free_list = p->next;
-			if (p->size > newsize && (signed)(p->size - newsize) >= ALIGN(MIN_SIZE + SIZE_T_SIZE)) {
+			if (p->size > newsize && (p->size - newsize) >= ALIGN(MIN_SIZE + SIZE_T_SIZE))
 				p = split_block(p,newsize);
-			}
 		}
 	}
 	if (p == (void *)-1) {
@@ -158,28 +157,67 @@ void *mm_realloc(void *ptr, size_t size) {
 		if (size < MIN_SIZE)
 			size = MIN_SIZE;
 		size_t newsize = ALIGN(size + SIZE_T_SIZE);
+		size_t oldsize = old_block->size;
 		if (old_block->size < newsize) {
-			header_t *new_block = (char *)mm_malloc(newsize) - HEADER_SIZE;
-			memmove((char *)new_block + HEADER_SIZE, (char *)old_block + HEADER_SIZE, ((header_t *)old_block)->size);
-			mm_free((char *)old_block + HEADER_SIZE);
-			return (char *)new_block + HEADER_SIZE;
+			header_t *prev = (header_t *)GET_PREV_BLOCK(old_block);
+			header_t *next = (header_t *)GET_NEXT_BLOCK(old_block);
+			char *lo = mem_heap_lo();
+			char *hi = mem_heap_hi();
+
+			if ((char *)prev < lo || (char *)prev > hi)
+				prev = 0;
+			else
+				prev = prev->status == FREE ? prev : 0;
+			if ((char *)next < lo || (char *)next > hi)
+				next = 0;
+			else
+				next = next->status == FREE ? next : 0;
+
+			if (prev != 0 && next != 0 && prev->size + old_block->size + next->size < newsize) {
+				prev = 0;
+				next = 0;
+			} else if (prev != 0 && prev->size + old_block->size < newsize) {
+				prev = 0;
+			} else if (next != 0 && old_block->size < newsize) {
+				next = 0;
+			}
+
+			header_t *new_block;
+
+			if (prev == 0 && next == 0) {
+				new_block = (header_t *)((char *)mm_malloc(newsize) - HEADER_SIZE);
+				memcpy((char *)new_block + HEADER_SIZE, (char *)old_block + HEADER_SIZE, old_block->size);
+				mm_free((char *)old_block + HEADER_SIZE);
+				return (char *)new_block + HEADER_SIZE;
+			} else {
+				header_t *free = free_list;
+				old_block->status = FREE;
+				old_block->prev = 0;
+				old_block->next = free;
+				if (free != 0)
+					free->prev = old_block;
+				free_list = old_block;
+				new_block = coalesce(old_block);
+				if (new_block->next != 0)
+					new_block->next->prev = 0;
+				free_list = new_block->next;
+				if (new_block != old_block)
+					memcpy((char *)new_block + HEADER_SIZE, (char *)old_block + HEADER_SIZE, oldsize);
+//				if (new_block->size > newsize && (new_block->size - newsize) >= ALIGN(MIN_SIZE + SIZE_T_SIZE))
+//					new_block = split_block(new_block,newsize);
+				new_block->status = ALLOC;
+				return (char *)new_block + HEADER_SIZE;
+			}
 		} /*else if (old_block->size > newsize) {
-			header_t *new_block = (char *)old_block + newsize;
-			new_block->status = ALLOC;
-			new_block->size = old_block->size - newsize;
-			new_block->prev = 0;
-			new_block->next = 0;
-			old_block->size = newsize;
-			((footer_t *)GET_FOOTER(old_block))->header = old_block;
-			((footer_t *)GET_FOOTER(new_block))->header = new_block;
-			mm_free((char *)new_block + HEADER_SIZE);
+			old_block = split_block(old_block,newsize);
+			old_block->status = ALLOC;
 		}*/
 		return (char *)old_block + HEADER_SIZE;
 	}
 }
 
 static header_t *split_block(header_t *p, size_t size) {
-	header_t *new_block = (char *)p + size;
+	header_t *new_block = (header_t *)((char *)p + size);
 	new_block->size = p->size - size;
 	new_block->status = FREE;
 	new_block->next = p->next;
@@ -202,11 +240,11 @@ static header_t *coalesce(header_t *p) {
 	char *lo = mem_heap_lo();
 	char *hi = mem_heap_hi();
 
-	if (prev < lo || prev > hi)
+	if ((char *)prev < lo || (char *)prev > hi)
 		prev = 0;
 	else
 		prev = prev->status == FREE ? prev : 0;
-	if (next < lo || next > hi)
+	if ((char *)next < lo || (char *)next > hi)
 		next = 0;
 	else
 		next = next->status == FREE ? next : 0;
@@ -283,7 +321,7 @@ static header_t *coalesce(header_t *p) {
  * Do the pointers in a heap block point to valid heap addresses?
  */
 int mm_check(void) {
-	char *top = (char *)mem_heap_hi();
+/*	char *top = (char *)mem_heap_hi();
 	header_t *p = mem_heap_lo();
 	printf("\nthe heap:\n");
 	printf("block\t\tprev\t\tnext\t\tfooter\t\tsize\tstatus\n");
@@ -299,6 +337,6 @@ int mm_check(void) {
 		printf("%11x\t%11x\t%11x\t%d\t%c\n",p,p->prev,p->next,p->size,p->status);
 		p = p->next;
 	}
-	printf("\n");
+	printf("\n");*/
 	return 0;
 }
