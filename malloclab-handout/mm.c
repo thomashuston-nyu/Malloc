@@ -48,7 +48,7 @@ team_t team = {
 #define FOOTER_SIZE (sizeof(footer_t))
 #define SIZE_T_SIZE (ALIGN(HEADER_SIZE + FOOTER_SIZE))
 
-#define MIN_SIZE 8
+#define MIN_SIZE 128
 #define MIN_BLOCK_SIZE (ALIGN(MIN_SIZE + SIZE_T_SIZE))
 
 #define GET_HEADER(p) ((header_t *)((char *)(p) - HEADER_SIZE));
@@ -70,6 +70,8 @@ team_t team = {
 
 #define NULL_BLOCK (void *)-1
 
+#define FREE_LISTS 8
+
 typedef struct header_t {
 	char status;
 	size_t size;
@@ -81,7 +83,7 @@ typedef struct footer_t {
 	struct header_t *header;
 } footer_t;
 
-static header_t *free_list;
+static header_t *segregated_list[FREE_LISTS];
 
 static header_t *split_block(header_t *p, size_t size);
 static header_t *coalesce(header_t *p);
@@ -90,13 +92,16 @@ static header_t *find_block(size_t size);
 static void set_alloc(header_t *p);
 static void set_free(header_t *p);
 static void remove_from_free_list(header_t *p);
+static int get_class(size_t size);
 
 
 /* 
  * mm_init - initialize the malloc package.
  */
 int mm_init(void) {
-	free_list = 0;
+	int i;
+	for (i = 0; i < FREE_LISTS; i++)
+		segregated_list[i] = 0;
 	return 0;
 }
 
@@ -244,15 +249,20 @@ static header_t *new_block(size_t size) {
 }
 
 static header_t *find_block(size_t size) {
-	if (size <= 0 || !free_list)
+	if (size <= 0)
 		return NULL_BLOCK;
 	if (size < MIN_SIZE)
 		size = MIN_SIZE;
 	size = ALIGN(size + SIZE_T_SIZE);
-	header_t *p = free_list;
-	while (p != 0 && p->size < size) {
+	int class = get_class(size);
+	for (class; class < FREE_LISTS - 1; class++)
+		if (segregated_list[class])
+			break;
+	if (!segregated_list[class])
+		return NULL_BLOCK;
+	header_t *p = segregated_list[class];
+	while (p != 0 && p->size < size)
 		p = p->next;
-	}
 	if (p == 0)
 		return NULL_BLOCK;
 	remove_from_free_list(p);
@@ -266,21 +276,42 @@ static void set_alloc(header_t *p) {
 }
 
 static void set_free(header_t *p) {
+	int class = get_class(p->size);
 	p->status = FREE;
 	p->prev = 0;
-	p->next = free_list;
-	if (free_list != 0)
-		free_list->prev = p;
-	free_list = p;
+	p->next = segregated_list[class];
+	if (segregated_list[class] != 0)
+		segregated_list[class]->prev = p;
+	segregated_list[class] = p;
 }
 
 static void remove_from_free_list(header_t *p) {
+	int class = get_class(p->size);
 	if (p->prev != 0)
 		p->prev->next = p->next;
 	if (p->next != 0)
 		p->next->prev = p->prev;
-	if (free_list == p)
-		free_list = p->next;
+	if (segregated_list[class] == p)
+		segregated_list[class] = p->next;
+}
+
+static int get_class(size_t size) {
+	if (size < 256)
+		return 0;
+	else if (size >= 256 && size < 512)
+		return 1;
+	else if (size >= 512 && size < 1024)
+		return 2;
+	else if (size >= 1024 && size < 2048)
+		return 3;
+	else if (size >= 2048 && size < 4096)
+		return 4;
+	else if (size >= 4096 && size < 8192)
+		return 5;
+	else if (size >= 8192 && size < 16384)
+		return 6;
+	else
+		return 7;
 }
 
 /*
@@ -307,11 +338,16 @@ int mm_check(void) {
 	printf("\n");
 	printf("the free list:\n");
 	printf("block\t\tprev\t\tnext\t\tsize\tstatus\n");
-	p = free_list;
-	while (p != 0) {
-		printf("%11x\t%11x\t%11x\t%d\t%c\n",p,p->prev,p->next,p->size,p->status);
-		p = p->next;
+	int i;
+	for (i = 0; i < FREE_LISTS; i++) {
+		printf("segregated_list[%d]:\n", i);
+		printf("block\t\tprev\t\tnext\t\tsize\tstatus\n");
+		p = segregated_list[i];
+		while (p != 0) {
+			printf("%11x\t%11x\t%11x\t%d\t%c\n",p,p->prev,p->next,p->size,p->status);
+			p = p->next;
+		}
 	}
-	printf("\n");*/
-	return 0;
+	printf("\n");
+	return 0;*/
 }
