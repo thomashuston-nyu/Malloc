@@ -48,7 +48,7 @@ team_t team = {
 #define FOOTER_SIZE (sizeof(footer_t))
 #define SIZE_T_SIZE (ALIGN(HEADER_SIZE + FOOTER_SIZE))
 
-#define MIN_SIZE 128
+#define MIN_SIZE 144
 #define MIN_BLOCK_SIZE (ALIGN(MIN_SIZE + SIZE_T_SIZE))
 
 #define GET_HEADER(p) ((header_t *)((char *)(p) - HEADER_SIZE));
@@ -348,6 +348,6 @@ int mm_check(void) {
 			p = p->next;
 		}
 	}
-	printf("\n");
-	return 0;*/
+	printf("\n");*/
+	return 0;
 }
