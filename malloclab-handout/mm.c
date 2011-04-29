@@ -41,16 +41,13 @@ team_t team = {
 #define HEAP_HI ((char *)mem_heap_hi())
 
 /* sets minimum size of a block */
-#define MIN_SIZE 144
+#define MIN_SIZE 128
 #define MIN_BLOCK_SIZE (ALIGN(MIN_SIZE + SIZE_T_SIZE))
 
 /* get pointers to header, body, and footer of a block */
 #define GET_HEADER(p) ((header_t *)((char *)(p) - HEADER_SIZE));
 #define GET_BODY(p) ((void *)((char *)p + HEADER_SIZE))
-#define GET_FOOTER(p) ((footer_t *)((char *)p + (p->size - FOOTER_SIZE)))
-
-/* set the footer of a block to point to its header */
-#define SET_FOOTER(p) (((footer_t *)GET_FOOTER(p))->header = p)
+#define GET_FOOTER(p) ((footer_t *)((char *)p + (GET_SIZE(p) - FOOTER_SIZE)))
 
 /* get the size of the body of a block */
 #define GET_BODY_SIZE(size) (size - SIZE_T_SIZE)
@@ -59,37 +56,48 @@ team_t team = {
 #define GET_BLOCK(p,size) ((header_t *)((char *)p + size))
 
 /* get pointers to the previous and next blocks in the heap */
-#define GET_PREV_BLOCK(p) ((header_t *)(((footer_t *)((char *)p - FOOTER_SIZE))->header))
-#define GET_NEXT_BLOCK(p) ((header_t *)((char *)p + p->size))
+#define GET_PREV_BLOCK(p) ((header_t *)((char *)p - ((footer_t *)((char *)p - FOOTER_SIZE))->size))
+#define GET_NEXT_BLOCK(p) ((header_t *)((char *)p + GET_SIZE(p)))
+
+/* get pointers to the previous and next blocks in the free list */
+#define GET_PREV(p) (p->prev)
+#define GET_NEXT(p) (GET_FOOTER(p)->next)
 
 /* check if a block is in the heap */
 #define IS_VALID_BLOCK(p) ((char *)p >= HEAP_LO && (char *)p <= HEAP_HI)
 
+/* check if a block is free */
+#define IS_FREE(p) (p->size & 1)
+
+/* mark a block as free or allocated */
+#define MARK_FREE(p) (p->size = p->size | 1)
+#define MARK_ALLOC(p) (p->size = GET_SIZE(p))
+
+/* get the size of a block */
+#define GET_SIZE(p) (p->size & 0xfffffffe)
+
 /* set the number of free lists */
 #define FREE_LISTS 8
-
-/* status tags for block headers */
-#define ALLOC '0'
-#define FREE '1'
 
 /* null pointer */
 #define NULL_BLOCK (void *)-1
 
 /* block header tag */
 typedef struct header_t {
-	char status;				// allocated or free
-	size_t size; 				// total size of the block
-	struct header_t *prev;		// pointer to previous free block in class
-	struct header_t *next;		// pointer to next free block in class
+	size_t size;			// size of block, allocated or free
+	struct header_t *prev;	// pointer to previous free block in class
 } header_t;
 
 /* block footer tag */
 typedef struct footer_t {
-	struct header_t *header;	// pointer to block header
+	size_t size;			// size of block
+	struct header_t *next;	// pointer to next free block in class
 } footer_t;
 
+/* segregated free lists */
 static header_t *free_list[FREE_LISTS];
 
+/* helper functions */
 static header_t *split_block(header_t *p, size_t size);
 static header_t *coalesce(header_t *p);
 static header_t *new_block(size_t size);
@@ -99,6 +107,10 @@ static void set_free(header_t *p);
 static void remove_from_free_list(header_t *p);
 static int get_class(size_t size);
 
+/* checker functions */
+static int check_coalesce(void);
+static int check_free_list(void);
+static int check_heap(void);
 
 /* 
  * mm_init - Initialize the segregated free lists to be empty.
@@ -151,27 +163,28 @@ void *mm_realloc(void *ptr, size_t size) {
 	else if (size <= 0) {
 		mm_free(ptr);
 		return NULL;
+	}
 	/* Reallocate the block or return a new block that fits the payload. */
-	} else {
+	else {
 		header_t *old_block = GET_HEADER(ptr);
 		if (size < MIN_SIZE)
 			size = MIN_SIZE;
 		size_t newsize = ALIGN(size + SIZE_T_SIZE);
-		size_t oldsize = old_block->size;
+		size_t oldsize = GET_SIZE(old_block);
 		/* The old block won't hold the new payload, so attempt to coalesce. */
-		if (old_block->size < newsize) {
+		if (oldsize < newsize) {
 			header_t *prev = GET_PREV_BLOCK(old_block);
 			header_t *next = GET_NEXT_BLOCK(old_block);
-			if (!IS_VALID_BLOCK(prev) || prev->status == ALLOC)
+			if (!IS_VALID_BLOCK(prev) || !IS_FREE(prev) || prev == old_block)
 				prev = 0;
-			if (!IS_VALID_BLOCK(next) || next->status == ALLOC)
+			if (!IS_VALID_BLOCK(next) || !IS_FREE(next) || next == old_block)
 				next = 0;
-			if (prev != 0 && next != 0 && prev->size + old_block->size + next->size < newsize) {
+			if (prev != 0 && next != 0 && GET_SIZE(prev) + GET_SIZE(old_block) + GET_SIZE(next) < newsize) {
 				prev = 0;
 				next = 0;
-			} else if (prev != 0 && prev->size + old_block->size < newsize) {
+			} else if (prev != 0 && GET_SIZE(prev) + GET_SIZE(old_block) < newsize) {
 				prev = 0;
-			} else if (next != 0 && old_block->size < newsize) {
+			} else if (next != 0 && GET_SIZE(old_block) + GET_SIZE(next) < newsize) {
 				next = 0;
 			}
 			header_t *new_block;
@@ -196,7 +209,10 @@ void *mm_realloc(void *ptr, size_t size) {
 				return GET_BODY(new_block);
 			}
 		}
-		return GET_BODY(old_block);
+		/* The old block will hold the new payload, so simply return it. */
+		else {
+			return GET_BODY(old_block);
+		}
 	}
 }
 
@@ -207,13 +223,15 @@ void *mm_realloc(void *ptr, size_t size) {
  * return the original block.
  */
 static header_t *split_block(header_t *p, size_t size) {
-	if (p->size >= size && (p->size - size) >= MIN_BLOCK_SIZE) {
+	if (GET_SIZE(p) >= size && (GET_SIZE(p) - size) >= MIN_BLOCK_SIZE) {
+		MARK_ALLOC(p);
 		header_t *new_block = GET_BLOCK(p,size);
-		new_block->size = p->size - size;
-		set_free(new_block);
-		SET_FOOTER(new_block);
+		new_block->size = GET_SIZE(p) - size;
+		GET_FOOTER(new_block)->size = GET_SIZE(p) - size;
 		p->size = size;
-		SET_FOOTER(p);
+		GET_FOOTER(p)->size = size;;
+		set_free(new_block);
+		coalesce(new_block);
 	}
 	return p;
 }
@@ -227,36 +245,38 @@ static header_t *split_block(header_t *p, size_t size) {
 static header_t *coalesce(header_t *p) {
 	header_t *prev = GET_PREV_BLOCK(p);
 	header_t *next = GET_NEXT_BLOCK(p);
-	if (!IS_VALID_BLOCK(prev) || prev->status == ALLOC)
+	if (!IS_VALID_BLOCK(prev) || !IS_FREE(prev) || prev == p)
 		prev = 0;
-	if (!IS_VALID_BLOCK(next) || next->status == ALLOC)
+	if (!IS_VALID_BLOCK(next) || !IS_FREE(next) || next == p)
 		next = 0;
 	/* Previous and next blocks are both allocated. */
 	if (prev == 0 && next == 0)
 		return p;
 	header_t *new_block;
+	size_t newsize;
 	remove_from_free_list(p);
 	/* Previous block is free. */
 	if (prev && !next) {
 		remove_from_free_list(prev);
 		new_block = prev;
-		new_block->size = prev->size + p->size;
+		newsize = GET_SIZE(prev) + GET_SIZE(p);
 	}
 	/* Next block is free. */
 	else if (!prev && next) {
 		remove_from_free_list(next);
 		new_block = p;
-		new_block->size = p->size + next->size;
+		newsize = GET_SIZE(p) + GET_SIZE(next);
 	}
 	/* Previous and next blocks are free. */
 	else {
 		remove_from_free_list(prev);
 		remove_from_free_list(next);
 		new_block = prev;
-		new_block->size = prev->size + p->size + next->size;
+		newsize = GET_SIZE(prev) + GET_SIZE(p) + GET_SIZE(next);
 	}
+	new_block->size = newsize;
+	GET_FOOTER(new_block)->size = newsize;
 	set_free(new_block);
-	SET_FOOTER(new_block);
 	return new_block;
 }
 
@@ -274,7 +294,7 @@ static header_t *new_block(size_t size) {
 	if (p == NULL_BLOCK)
 		return NULL_BLOCK;
 	p->size = size;
-	SET_FOOTER(p);
+	GET_FOOTER(p)->size = size;
 	return p;
 }
 
@@ -289,45 +309,41 @@ static header_t *find_block(size_t size) {
 	if (size < MIN_SIZE)
 		size = MIN_SIZE;
 	size = ALIGN(size + SIZE_T_SIZE);
-	/* Iterate over the free lists starting at the initial size class
-	 * until a non-empty list is found. */
 	int class;
-	for (class = get_class(size); class < FREE_LISTS - 1; class++)
-		if (free_list[class])
-			break;
-	/* If all free lists are empty, return null. */
-	if (!free_list[class])
-		return NULL_BLOCK;
-	/* Otherwise, iterate over the free list until a large
-	 * enough block is found. */
-	header_t *p = free_list[class];
-	while (p != 0 && p->size < size)
-		p = p->next;
-	/* If no block is available, return null. */
-	if (p == 0)
-		return NULL_BLOCK;
-	/* Otherwise remove the block from the free list and return it. */
-	remove_from_free_list(p);
-	return split_block(p,size);
+	header_t *p;
+	/* Iterate over the free lists starting at the initial size class
+	 * until a large enough free block is found. */
+	for (class = get_class(size); class < FREE_LISTS; class++) {
+		p = free_list[class];
+		while (p != 0 && GET_SIZE(p) < size)
+			p = GET_NEXT(p);
+		/* Remove free block from list and split it */
+		if (p != 0) {
+			remove_from_free_list(p);
+			return split_block(p,size);
+		}
+	}
+	/* No free block found */
+	return NULL_BLOCK;
 }
 
 /*
  * set_alloc -
  */
 static void set_alloc(header_t *p) {
-	p->status = ALLOC;
-	p->next = 0;
+	MARK_ALLOC(p);
 	p->prev = 0;
+	GET_FOOTER(p)->next = 0;
 }
 
 /*
  * set_free -
  */
 static void set_free(header_t *p) {
-	int class = get_class(p->size);
-	p->status = FREE;
+	int class = get_class(GET_SIZE(p));
+	MARK_FREE(p);
 	p->prev = 0;
-	p->next = free_list[class];
+	GET_FOOTER(p)->next = free_list[class];
 	if (free_list[class] != 0)
 		free_list[class]->prev = p;
 	free_list[class] = p;
@@ -337,13 +353,13 @@ static void set_free(header_t *p) {
  * remove_from_free_list -
  */
 static void remove_from_free_list(header_t *p) {
-	int class = get_class(p->size);
-	if (p->prev != 0)
-		p->prev->next = p->next;
-	if (p->next != 0)
-		p->next->prev = p->prev;
+	int class = get_class(GET_SIZE(p));
+	if (GET_PREV(p) != 0)
+		GET_FOOTER(GET_PREV(p))->next = GET_NEXT(p);
+	if (GET_NEXT(p) != 0)
+		GET_NEXT(p)->prev = GET_PREV(p);
 	if (free_list[class] == p)
-		free_list[class] = p->next;
+		free_list[class] = GET_NEXT(p);
 }
 
 /*
@@ -352,20 +368,39 @@ static void remove_from_free_list(header_t *p) {
 static int get_class(size_t size) {
 	if (size < 256)
 		return 0;
-	else if (size >= 256 && size < 512)
+	else if (size < 512)
 		return 1;
-	else if (size >= 512 && size < 1024)
+	else if (size < 1024)
 		return 2;
-	else if (size >= 1024 && size < 2048)
+	else if (size < 2048)
 		return 3;
-	else if (size >= 2048 && size < 4096)
+	else if (size < 4096)
 		return 4;
-	else if (size >= 4096 && size < 8192)
+	else if (size < 8192)
 		return 5;
-	else if (size >= 8192 && size < 16384)
+	else if (size < 16384)
 		return 6;
 	else
 		return 7;
+}
+
+/*
+ * check_coalesce - Verify that all free blocks have been coalesced.
+ */
+static int check_coalesce() {
+	int valid = 1;
+	header_t *prev = NULL_BLOCK;
+	header_t *next;
+	header_t *p = mem_heap_lo();
+	char *top = (char *)mem_heap_hi();
+	while ((char *)p < top) {
+		next = GET_NEXT_BLOCK(p);
+		if (IS_FREE(p) && IS_FREE(next))
+			valid = 0;
+		prev = p;
+		p = next;
+	}
+	return valid;
 }
 
 /*
@@ -378,11 +413,14 @@ static int check_free_list(void) {
 	for (class = 0; class < FREE_LISTS; class++) {
 		p = free_list[class];
 		while (p != 0) {
-			if (p->status != FREE) {
+			if (!IS_FREE(p)) {
 				printf("Error: allocated block on free list %d",class);
 				valid = 0;
 			}
-			p = p->next;
+			if (!IS_FREE(GET_PREV(p))) {
+				printf("Error: pointer to allocated block in free list %d",class);
+			}
+			p = GET_NEXT(p);
 		}
 	}
 	return valid;
@@ -396,10 +434,10 @@ static int check_heap(void) {
 	header_t *list;
 	int valid = 1;
 	while ((char *)p < HEAP_HI) {
-		if (p->status == FREE) {
+		if (IS_FREE(p)) {
 			list = free_list[get_class(p->size)];
 			while (list != 0 && list != p)
-				list = list->next;
+				list = GET_NEXT(list);
 			if (list != p) {
 				printf("Error: free block not in a free list");
 				valid = 0;
@@ -411,19 +449,19 @@ static int check_heap(void) {
 }
 
 /*
- * mm_check 
+ * mm_check -
  * It will check any invariants or consistency conditions you consider prudent.
  * It returns a nonzero value if and only if your heap is consistent.
  * You are encouraged to print out error messages when mm check fails.
- * Is every block in the free list marked as free?
- * Are there any contiguous free blocks that somehow escaped coalescing? //TODO
- * Is every free block actually in the free list?
- * Do the pointers in the free list point to valid free blocks? //TODO
- * Do any allocated blocks overlap? //TODO
- * Do the pointers in a heap block point to valid heap addresses? //TODO
+ * Is every block in the free list marked as free? X
+ * Are there any contiguous free blocks that somehow escaped coalescing? X
+ * Is every free block actually in the free list? X
+ * Do the pointers in the free list point to valid free blocks? X
+ * Do any allocated blocks overlap?
+ * Do the pointers in a heap block point to valid heap addresses?
  */
 int mm_check(void) {
-	if (!check_free_list() || !check_heap())
+	if (!check_free_list() || !check_heap() || !check_coalesce())
 		return 0;
 	else
 		return 1;
