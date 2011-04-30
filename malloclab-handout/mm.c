@@ -1,7 +1,17 @@
 /*
- * mm.c - structure of free and allocated blocks,
- * organization of the free list, how allocator manipulates
- * the free list.
+ * mm.c - Implements a memory allocation package that includes the
+ * malloc, free, and realloc functions.
+ * 
+ * This approach uses explicit segregated free lists to store blocks.
+ * Each segregated list is a doubly linked-list corresponding to a
+ * specific size class. Each block is made of up a header and a footer,
+ * which contain the size of the block and pointers to the previous
+ * and next blocks in the corresponding free list.
+ * 
+ * Allocated blocks are placed using a first fit policy. In order to
+ * prevent fragmentation, splitting is used during the allocation of
+ * blocks. Additionally, immediate coalescing is attempted each time
+ * a block is freed.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -328,7 +338,8 @@ static header_t *find_block(size_t size) {
 }
 
 /*
- * set_alloc -
+ * set_alloc - Mark the block as allocated and set it so
+ * that is no longer points to any other block.
  */
 static void set_alloc(header_t *p) {
 	MARK_ALLOC(p);
@@ -337,7 +348,8 @@ static void set_alloc(header_t *p) {
 }
 
 /*
- * set_free -
+ * set_free - Mark the block as free and insert it into one of
+ * the free lists based on its size class.
  */
 static void set_free(header_t *p) {
 	int class = get_class(GET_SIZE(p));
@@ -350,7 +362,8 @@ static void set_free(header_t *p) {
 }
 
 /*
- * remove_from_free_list -
+ * remove_from_free_list - Remove the block from the free list by
+ * adjusting its incoming pointers.
  */
 static void remove_from_free_list(header_t *p) {
 	int class = get_class(GET_SIZE(p));
@@ -363,7 +376,9 @@ static void remove_from_free_list(header_t *p) {
 }
 
 /*
- * get_class -
+ * get_class - Return an integer corresponding to the size class
+ * of a block. This will help to determine which part of the
+ * segregated free list to use.
  */
 static int get_class(size_t size) {
 	if (size < 256)
