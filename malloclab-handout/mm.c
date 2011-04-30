@@ -118,9 +118,9 @@ static void remove_from_free_list(header_t *p);
 static int get_class(size_t size);
 
 /* checker functions */
-static int check_coalesce(void);
 static int check_free_list(void);
 static int check_heap(void);
+static int mm_check(void);
 
 /* 
  * mm_init - Initialize the segregated free lists to be empty.
@@ -183,6 +183,7 @@ void *mm_realloc(void *ptr, size_t size) {
 		size_t oldsize = GET_SIZE(old_block);
 		/* The old block won't hold the new payload, so attempt to coalesce. */
 		if (oldsize < newsize) {
+			/* Examine previous and next blocks for possible coalescing. */
 			header_t *prev = GET_PREV_BLOCK(old_block);
 			header_t *next = GET_NEXT_BLOCK(old_block);
 			if (!IS_VALID_BLOCK(prev) || !IS_FREE(prev) || prev == old_block)
@@ -250,9 +251,10 @@ static header_t *split_block(header_t *p, size_t size) {
  * coalesce - Check the previous and next blocks to see if they are
  * free. If either or both are, remove all the relevant blocks from
  * the free list, combine them into a single larger block, and insert
- * the new block back into the free list.
+ * the new block back into the appropriate free list.
  */
 static header_t *coalesce(header_t *p) {
+	/* Examine previous and next blocks for possible coalescing. */
 	header_t *prev = GET_PREV_BLOCK(p);
 	header_t *next = GET_NEXT_BLOCK(p);
 	if (!IS_VALID_BLOCK(prev) || !IS_FREE(prev) || prev == p)
@@ -400,26 +402,9 @@ static int get_class(size_t size) {
 }
 
 /*
- * check_coalesce - Verify that all free blocks have been coalesced.
- */
-static int check_coalesce() {
-	int valid = 1;
-	header_t *prev = NULL_BLOCK;
-	header_t *next;
-	header_t *p = mem_heap_lo();
-	char *top = (char *)mem_heap_hi();
-	while ((char *)p < top) {
-		next = GET_NEXT_BLOCK(p);
-		if (IS_FREE(p) && IS_FREE(next))
-			valid = 0;
-		prev = p;
-		p = next;
-	}
-	return valid;
-}
-
-/*
  * check_free_list - Verify that every block in the free list is free.
+ * Also check that there are no pointers to allocated blocks. Returns
+ * one if and only if the free lists are consistent.
  */
 static int check_free_list(void) {
 	int class;
@@ -428,12 +413,15 @@ static int check_free_list(void) {
 	for (class = 0; class < FREE_LISTS; class++) {
 		p = free_list[class];
 		while (p != 0) {
+			/* Make sure every block in free list is actually free. */
 			if (!IS_FREE(p)) {
 				printf("Error: allocated block on free list %d",class);
 				valid = 0;
 			}
-			if (!IS_FREE(GET_PREV(p))) {
+			/* Make sure no block header points to an allocated block. */
+			if (IS_VALID_BLOCK(GET_PREV(p)) && GET_PREV(p) != p && !IS_FREE(GET_PREV(p))) {
 				printf("Error: pointer to allocated block in free list %d",class);
+				valid = 0;
 			}
 			p = GET_NEXT(p);
 		}
@@ -443,40 +431,51 @@ static int check_free_list(void) {
 
 /*
  * check_heap - Verify that every free block in the heap is in a free list.
+ * Verify that no contiguous free blocks have escaped coalescing. Verify that
+ * all block headers and footers have consistent sizes. Returns one if
+ * and only if the heap is consistent.
+ * WARNING: This function takes several minutes to run on the binary-bal traces.
  */
 static int check_heap(void) {
 	header_t *p = (header_t *)HEAP_LO;
-	header_t *list;
+	header_t *list, *next;
 	int valid = 1;
 	while ((char *)p < HEAP_HI) {
+		next = GET_NEXT_BLOCK(p);
+		/* Check header and footer size consistency. */
+		if (GET_SIZE(p) != GET_FOOTER(p)->size) {
+			printf("Error: inconsistent sizes in block header and footer.\n");
+			valid = 0;
+		}
 		if (IS_FREE(p)) {
-			list = free_list[get_class(p->size)];
-			while (list != 0 && list != p)
-				list = GET_NEXT(list);
-			if (list != p) {
-				printf("Error: free block not in a free list");
+			/* Check for blocks that missed coalescing. */
+			if (IS_VALID_BLOCK(next) && next != p && IS_FREE(next)) {
+				printf("Error: free blocks not coalesced.\n");
 				valid = 0;
 			}
+			list = free_list[get_class(p->size)];
+			/* Make sure free block is in the correct free list. */
+			while (list != p) {
+				if (list == 0) {
+					printf("Error: free block not in a free list.\n");
+					valid = 0;
+					break;
+				}
+				list = GET_NEXT(list);
+			}
 		}
-		p = GET_NEXT_BLOCK(p);
+		p = next;
 	}
 	return valid;
 }
 
 /*
- * mm_check -
- * It will check any invariants or consistency conditions you consider prudent.
- * It returns a nonzero value if and only if your heap is consistent.
- * You are encouraged to print out error messages when mm check fails.
- * Is every block in the free list marked as free? X
- * Are there any contiguous free blocks that somehow escaped coalescing? X
- * Is every free block actually in the free list? X
- * Do the pointers in the free list point to valid free blocks? X
- * Do any allocated blocks overlap?
- * Do the pointers in a heap block point to valid heap addresses?
+ * mm_check - Checks the free list and heap for consistency. Returns one
+ * if and only if the free lists and heap are consistent. See
+ * check_free_list() and check_heap() for more details.
  */
 int mm_check(void) {
-	if (!check_free_list() || !check_heap() || !check_coalesce())
+	if (!check_free_list() || !check_heap())
 		return 0;
 	else
 		return 1;
